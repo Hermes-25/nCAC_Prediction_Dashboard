@@ -253,24 +253,8 @@ def load_data():
     })
     return df, False
 
-def _deep_merge_layout(base, override):
-    merged = {}
-    for k, v in base.items():
-        if isinstance(v, dict):
-            merged[k] = dict(v)
-        else:
-            merged[k] = v
-    for k, v in override.items():
-        if isinstance(v, dict) and isinstance(merged.get(k), dict):
-            merged[k].update(v)
-        else:
-            merged[k] = v
-    return merged
-
 def apply_theme(fig, height=420, **kw):
-    layout = _deep_merge_layout(PLOTLY_BASE, kw)
-    layout["height"] = height
-    fig.update_layout(**layout)
+    fig.update_layout(**PLOTLY_BASE, height=height, **kw)
     return fig
 
 ALL_34 = [
@@ -307,31 +291,23 @@ MEDIANS.update({
 model, MODEL_REAL = load_model()
 df, DATA_REAL = load_data()
 
+def predict_ncac(row_dict: dict) -> float:
+    """Always pass a pure numpy array — never a DataFrame.
+    The joblib model was fitted on numpy arrays; newer sklearn
+    SimpleImputer raises AttributeError when given a DataFrame."""
+    X = np.array(
+        [[float(row_dict.get(f, MEDIANS.get(f, 0.0))) for f in ALL_34]],
+        dtype=np.float64,
+    )
+    return float(model.predict(X)[0])
 
-def build_numeric_feature_frame(rows, feature_order):
-    """Build a strictly numeric DataFrame aligned to the model feature order."""
-    if isinstance(rows, dict):
-        rows = [rows]
-    clean_rows = []
-    for row in rows:
-        base = {f: np.nan for f in feature_order}
-        if isinstance(row, dict):
-            for k, v in row.items():
-                if k in base:
-                    base[k] = v
-        clean_rows.append(base)
-    X = pd.DataFrame(clean_rows, columns=feature_order)
-    for col in feature_order:
-        X[col] = pd.to_numeric(X[col], errors="coerce")
-    X = X.astype("float64")
-    return X
-
-
-def safe_model_predict(model_obj, rows, feature_order):
-    """Predict safely with sklearn pipelines that expect named numeric columns."""
-    X = build_numeric_feature_frame(rows, feature_order)
-    preds = model_obj.predict(X)
-    return np.asarray(preds, dtype="float64")
+def predict_batch(rows: list) -> np.ndarray:
+    """Batch predict — rows is a list of dicts."""
+    X = np.array(
+        [[float(r.get(f, MEDIANS.get(f, 0.0))) for f in ALL_34] for r in rows],
+        dtype=np.float64,
+    )
+    return model.predict(X)
 
 # ═══════════════════════════════════════════════════════════════════════════
 # NAVIGATION  — session_state router
@@ -457,8 +433,7 @@ def page_overview():
             if x < 6.4:
                 fig.add_annotation(x=x+1.25, y=0.5, text="→",
                                    showarrow=False, font=dict(size=18, color=M))
-        fig = apply_theme(fig, height=180,
-                          margin=dict(l=0,r=0,t=10,b=10),
+        fig.update_layout(**PLOTLY_BASE, height=180, margin=dict(l=0,r=0,t=10,b=10),
                           xaxis=dict(visible=False,range=[-0.2,8.0]),
                           yaxis=dict(visible=False,range=[-0.2,1.3]))
         st.plotly_chart(fig, use_container_width=True)
@@ -607,7 +582,7 @@ def page_tsa():
         label(0.67,0.78,"Clean gas (N₂)",B,9)
         label(0.66,0.35,"Rich CO₂ stream",C,9)
         label(0.83,0.26,"Liquid CO₂",T,9)
-        label(0.75,0.67,"Steam (regen)",C,9,anchor="right")
+        label(0.75,0.67,"Steam (regen)",C,9,"right")
 
         # ── Phase indicator ──
         phase_col = T if ads_on else A
@@ -617,7 +592,7 @@ def page_tsa():
         # ── nCAC formula box ──
         box(0.52,0.92,0.96,0.99,"rgba(0,0,0,0.25)",M,"nCAC (€/t CO₂) = f(Henry_CO₂, selectivity, water uptake, heat of ads.)","")
 
-        fig = apply_theme(fig, height=580,
+        fig.update_layout(**PLOTLY_BASE, height=580,
                           xaxis=dict(visible=False,range=[0,1]),
                           yaxis=dict(visible=False,range=[0,1],scaleanchor="x"),
                           margin=dict(l=0,r=0,t=10,b=0))
@@ -710,7 +685,7 @@ def page_tsa():
             fig2.add_annotation(x=1.5,y=-0.35,text="POAVF = pore accessible volume fraction",
                                  showarrow=False,font=dict(size=10,color=M),xanchor="center")
 
-            fig2 = apply_theme(fig2, height=380,
+            fig2.update_layout(**PLOTLY_BASE, height=380,
                                xaxis=dict(visible=False,range=[-0.5,3.5]),
                                yaxis=dict(visible=False,range=[-0.5,3.5],scaleanchor="x"),
                                legend=dict(x=0.01,y=0.99,font=dict(size=10)),
@@ -944,7 +919,7 @@ def page_explorer():
 
     with t2:
         if "Henry_mol_kg_Pa_CO2" in df_c.columns and "Henry_mol_kg_Pa_N2" in df_c.columns:
-            dh=df_c[(df_c["Henry_mol_kg_Pa_CO2"]>0) & (df_c["Henry_mol_kg_Pa_N2"]>0)].copy()
+            dh=df_c[df_c["Henry_mol_kg_Pa_CO2"]>0][df_c["Henry_mol_kg_Pa_N2"]>0].copy()
             dh["lH_CO2"]=np.log10(dh["Henry_mol_kg_Pa_CO2"])
             dh["lH_N2"]=np.log10(dh["Henry_mol_kg_Pa_N2"])
             lo5=dh["nCAC"].quantile(0.03); hi95=dh["nCAC"].quantile(0.97)
@@ -1069,8 +1044,7 @@ def page_predictor():
         row["CO2_Henry_x_POAVF"]=hco2*poavf
         row["CO2_Henry_over_Water_Henry"]=hco2/(row["Henry_mol_kg_Pa"]+eps)
 
-        X_in = build_numeric_feature_frame([row], ALL_34)
-        ncac = float(safe_model_predict(model, [row], ALL_34)[0])
+        ncac = predict_ncac(row)
 
         # Color coding
         if ncac < 0:   nc, verdict, grade = T,   "🟢 Exceptional",     "A+"
@@ -1359,7 +1333,7 @@ def page_sensitivity():
                 preds=[]
                 for v in grid:
                     r2d=dict(MEDIANS); r2d[feat]=v
-                    preds.append(float(safe_model_predict(model, [r2d], ALL_34)[0]))
+                    preds.append(predict_ncac(r2d))
                 return grid,np.array(preds),lbl,col,log
 
             fig=go.Figure()
@@ -1387,8 +1361,8 @@ def page_sensitivity():
                 delta=(hi-lo)*0.01
                 rlo=dict(MEDIANS); rlo[feat]=max(lo,med-delta)
                 rhi=dict(MEDIANS); rhi[feat]=min(hi,med+delta)
-                plo = float(safe_model_predict(model, [rlo], ALL_34)[0])
-                phi = float(safe_model_predict(model, [rhi], ALL_34)[0])
+                plo = predict_ncac(rlo)
+                phi = predict_ncac(rhi)
                 slope=(phi-plo)/(2*delta)
                 dir_="↓ beneficial" if slope<0 else "↑ costly"
                 dc=G if slope<0 else C
@@ -1414,7 +1388,7 @@ def page_sensitivity():
         for i,vy in enumerate(gy):
             rows2=[dict(MEDIANS) for _ in gx]
             for j,vx in enumerate(gx): rows2[j][fx]=vx; rows2[j][fy]=vy
-            Z2[i,:] = safe_model_predict(model, rows2, ALL_34)
+        Z2[i,:] = predict_batch(rows2)
         fig3=go.Figure(go.Heatmap(x=np.log10(gx) if logx else gx,y=np.log10(gy) if logy else gy,
             z=Z2,colorscale="RdYlGn_r",
             colorbar=dict(title="nCAC",tickfont=dict(color="#e2eaf3"),title_font=dict(color="#e2eaf3")),
