@@ -12,6 +12,52 @@ import numpy as np
 import os, warnings
 warnings.filterwarnings("ignore")
 
+# sklearn/joblib compatibility patch:
+# A model trained under an older sklearn version can unpickle successfully
+# but still crash at prediction time because private SimpleImputer attrs
+# such as `_fill_dtype` are missing in newer runtimes.
+def _patch_simple_imputer_compat(obj, seen=None):
+    if seen is None:
+        seen = set()
+    oid = id(obj)
+    if oid in seen:
+        return
+    seen.add(oid)
+
+    try:
+        from sklearn.impute import SimpleImputer
+    except Exception:
+        SimpleImputer = tuple()
+
+    if isinstance(obj, SimpleImputer):
+        if not hasattr(obj, "_fill_dtype"):
+            stats = getattr(obj, "statistics_", None)
+            if stats is not None and hasattr(stats, "dtype"):
+                obj._fill_dtype = stats.dtype
+            else:
+                obj._fill_dtype = np.dtype("float64")
+        if not hasattr(obj, "keep_empty_features"):
+            obj.keep_empty_features = False
+        return
+
+    if hasattr(obj, "steps"):
+        for _, step in obj.steps:
+            _patch_simple_imputer_compat(step, seen)
+    if hasattr(obj, "transformers"):
+        for item in obj.transformers:
+            if len(item) >= 2:
+                _patch_simple_imputer_compat(item[1], seen)
+    if hasattr(obj, "transformers_"):
+        for item in obj.transformers_:
+            if len(item) >= 2:
+                _patch_simple_imputer_compat(item[1], seen)
+    if hasattr(obj, "estimators"):
+        for est in obj.estimators:
+            _patch_simple_imputer_compat(est, seen)
+    if hasattr(obj, "estimators_"):
+        for est in obj.estimators_:
+            _patch_simple_imputer_compat(est, seen)
+
 st.set_page_config(
     page_title="PrISMa Sorbent Screener",
     page_icon="⚗️",
@@ -218,6 +264,7 @@ def load_model():
     try:
         import joblib
         m = joblib.load("RF_Tuned_final.joblib")
+        _patch_simple_imputer_compat(m)
         return m, True
     except Exception:
         from sklearn.ensemble import RandomForestRegressor
@@ -229,6 +276,7 @@ def load_model():
         p = Pipeline([("i", SimpleImputer(strategy="median")),
                       ("m", RandomForestRegressor(200, max_depth=12, random_state=42, n_jobs=-1))])
         p.fit(X, y)
+        _patch_simple_imputer_compat(p)
         return p, False
 
 @st.cache_data(show_spinner="Loading dataset…")
@@ -291,23 +339,50 @@ MEDIANS.update({
 model, MODEL_REAL = load_model()
 df, DATA_REAL = load_data()
 
+def _rows_to_numpy(rows: list) -> np.ndarray:
+    arr = []
+    for row in rows:
+        vals = []
+        for f in ALL_34:
+            v = row.get(f, MEDIANS.get(f, 0.0))
+            try:
+                v = float(v)
+            except Exception:
+                v = MEDIANS.get(f, 0.0)
+            if not np.isfinite(v):
+                v = np.nan
+            vals.append(v)
+        arr.append(vals)
+    return np.asarray(arr, dtype=np.float64)
+
+
+def _safe_model_predict(X_np: np.ndarray) -> np.ndarray:
+    last_err = None
+    payloads = [X_np, pd.DataFrame(X_np, columns=ALL_34)]
+    for payload in payloads:
+        try:
+            return model.predict(payload)
+        except AttributeError as e:
+            last_err = e
+            if "_fill_dtype" in str(e) or "keep_empty_features" in str(e):
+                _patch_simple_imputer_compat(model)
+                try:
+                    return model.predict(payload)
+                except Exception as inner:
+                    last_err = inner
+        except Exception as e:
+            last_err = e
+    raise last_err
+
+
 def predict_ncac(row_dict: dict) -> float:
-    """Always pass a pure numpy array — never a DataFrame.
-    The joblib model was fitted on numpy arrays; newer sklearn
-    SimpleImputer raises AttributeError when given a DataFrame."""
-    X = np.array(
-        [[float(row_dict.get(f, MEDIANS.get(f, 0.0))) for f in ALL_34]],
-        dtype=np.float64,
-    )
-    return float(model.predict(X)[0])
+    X = _rows_to_numpy([row_dict])
+    return float(_safe_model_predict(X)[0])
+
 
 def predict_batch(rows: list) -> np.ndarray:
-    """Batch predict — rows is a list of dicts."""
-    X = np.array(
-        [[float(r.get(f, MEDIANS.get(f, 0.0))) for f in ALL_34] for r in rows],
-        dtype=np.float64,
-    )
-    return model.predict(X)
+    X = _rows_to_numpy(rows)
+    return np.asarray(_safe_model_predict(X), dtype=float)
 
 # ═══════════════════════════════════════════════════════════════════════════
 # NAVIGATION  — session_state router
@@ -1387,8 +1462,10 @@ def page_sensitivity():
         Z2=np.zeros((len(gy),len(gx)))
         for i,vy in enumerate(gy):
             rows2=[dict(MEDIANS) for _ in gx]
-            for j,vx in enumerate(gx): rows2[j][fx]=vx; rows2[j][fy]=vy
-        Z2[i,:] = predict_batch(rows2)
+            for j,vx in enumerate(gx):
+                rows2[j][fx]=vx
+                rows2[j][fy]=vy
+            Z2[i,:] = predict_batch(rows2)
         fig3=go.Figure(go.Heatmap(x=np.log10(gx) if logx else gx,y=np.log10(gy) if logy else gy,
             z=Z2,colorscale="RdYlGn_r",
             colorbar=dict(title="nCAC",tickfont=dict(color="#e2eaf3"),title_font=dict(color="#e2eaf3")),
