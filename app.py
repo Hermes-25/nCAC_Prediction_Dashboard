@@ -305,6 +305,7 @@ MEDIANS.update({
 })
 
 model, MODEL_REAL = load_model()
+patch_legacy_sklearn_imputers(model)
 df, DATA_REAL = load_data()
 
 
@@ -327,8 +328,61 @@ def build_numeric_feature_frame(rows, feature_order):
     return X
 
 
+
+
+def patch_legacy_sklearn_imputers(obj, _seen=None):
+    """Patch sklearn SimpleImputer objects loaded across version boundaries."""
+    if _seen is None:
+        _seen = set()
+    oid = id(obj)
+    if oid in _seen:
+        return obj
+    _seen.add(oid)
+
+    try:
+        from sklearn.impute import SimpleImputer
+    except Exception:
+        SimpleImputer = None
+
+    if SimpleImputer is not None and isinstance(obj, SimpleImputer):
+        if not hasattr(obj, '_fill_dtype'):
+            stats = getattr(obj, 'statistics_', None)
+            if stats is not None and hasattr(stats, 'dtype'):
+                obj._fill_dtype = stats.dtype
+            else:
+                obj._fill_dtype = np.dtype('float64')
+        return obj
+
+    if isinstance(obj, dict):
+        for v in obj.values():
+            patch_legacy_sklearn_imputers(v, _seen)
+        return obj
+
+    if isinstance(obj, (list, tuple, set)):
+        for v in obj:
+            patch_legacy_sklearn_imputers(v, _seen)
+        return obj
+
+    for attr in ['steps', 'transformer_list', 'transformers', 'transformers_', 'named_steps', 'named_transformers_']:
+        if hasattr(obj, attr):
+            try:
+                patch_legacy_sklearn_imputers(getattr(obj, attr), _seen)
+            except Exception:
+                pass
+
+    if hasattr(obj, 'get_params'):
+        try:
+            params = obj.get_params(deep=False)
+            for v in params.values():
+                patch_legacy_sklearn_imputers(v, _seen)
+        except Exception:
+            pass
+
+    return obj
+
 def safe_model_predict(model_obj, rows, feature_order):
     """Predict safely with sklearn pipelines that expect named numeric columns."""
+    patch_legacy_sklearn_imputers(model_obj)
     X = build_numeric_feature_frame(rows, feature_order)
     preds = model_obj.predict(X)
     return np.asarray(preds, dtype="float64")
