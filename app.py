@@ -307,6 +307,32 @@ MEDIANS.update({
 model, MODEL_REAL = load_model()
 df, DATA_REAL = load_data()
 
+
+def build_numeric_feature_frame(rows, feature_order):
+    """Build a strictly numeric DataFrame aligned to the model feature order."""
+    if isinstance(rows, dict):
+        rows = [rows]
+    clean_rows = []
+    for row in rows:
+        base = {f: np.nan for f in feature_order}
+        if isinstance(row, dict):
+            for k, v in row.items():
+                if k in base:
+                    base[k] = v
+        clean_rows.append(base)
+    X = pd.DataFrame(clean_rows, columns=feature_order)
+    for col in feature_order:
+        X[col] = pd.to_numeric(X[col], errors="coerce")
+    X = X.astype("float64")
+    return X
+
+
+def safe_model_predict(model_obj, rows, feature_order):
+    """Predict safely with sklearn pipelines that expect named numeric columns."""
+    X = build_numeric_feature_frame(rows, feature_order)
+    preds = model_obj.predict(X)
+    return np.asarray(preds, dtype="float64")
+
 # ═══════════════════════════════════════════════════════════════════════════
 # NAVIGATION  — session_state router
 # ═══════════════════════════════════════════════════════════════════════════
