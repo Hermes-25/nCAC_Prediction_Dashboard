@@ -1043,9 +1043,8 @@ def page_predictor():
         row["CO2_Henry_x_POAVF"]=hco2*poavf
         row["CO2_Henry_over_Water_Henry"]=hco2/(row["Henry_mol_kg_Pa"]+eps)
 
-        X_in=pd.DataFrame([row])[ALL_34]
-        try:    ncac = float(model.predict(X_in)[0])
-        except: ncac = float(model.predict(X_in.values)[0])
+        X_in = build_numeric_feature_frame([row], ALL_34)
+        ncac = float(safe_model_predict(model, [row], ALL_34)[0])
 
         # Color coding
         if ncac < 0:   nc, verdict, grade = T,   "🟢 Exceptional",     "A+"
@@ -1334,9 +1333,7 @@ def page_sensitivity():
                 preds=[]
                 for v in grid:
                     r2d=dict(MEDIANS); r2d[feat]=v
-                    X2=pd.DataFrame([r2d])[ALL_34]
-                    try:    preds.append(float(model.predict(X2)[0]))
-                    except: preds.append(float(model.predict(X2.values)[0]))
+                    preds.append(float(safe_model_predict(model, [r2d], ALL_34)[0]))
                 return grid,np.array(preds),lbl,col,log
 
             fig=go.Figure()
@@ -1364,12 +1361,8 @@ def page_sensitivity():
                 delta=(hi-lo)*0.01
                 rlo=dict(MEDIANS); rlo[feat]=max(lo,med-delta)
                 rhi=dict(MEDIANS); rhi[feat]=min(hi,med+delta)
-                try:
-                    plo=float(model.predict(pd.DataFrame([rlo])[ALL_34])[0])
-                    phi=float(model.predict(pd.DataFrame([rhi])[ALL_34])[0])
-                except:
-                    plo=float(model.predict(pd.DataFrame([rlo])[ALL_34].values)[0])
-                    phi=float(model.predict(pd.DataFrame([rhi])[ALL_34].values)[0])
+                plo = float(safe_model_predict(model, [rlo], ALL_34)[0])
+                phi = float(safe_model_predict(model, [rhi], ALL_34)[0])
                 slope=(phi-plo)/(2*delta)
                 dir_="↓ beneficial" if slope<0 else "↑ costly"
                 dc=G if slope<0 else C
@@ -1395,9 +1388,7 @@ def page_sensitivity():
         for i,vy in enumerate(gy):
             rows2=[dict(MEDIANS) for _ in gx]
             for j,vx in enumerate(gx): rows2[j][fx]=vx; rows2[j][fy]=vy
-            Xb=pd.DataFrame(rows2)[ALL_34]
-            try:    Z2[i,:]=model.predict(Xb)
-            except: Z2[i,:]=model.predict(Xb.values)
+            Z2[i,:] = safe_model_predict(model, rows2, ALL_34)
         fig3=go.Figure(go.Heatmap(x=np.log10(gx) if logx else gx,y=np.log10(gy) if logy else gy,
             z=Z2,colorscale="RdYlGn_r",
             colorbar=dict(title="nCAC",tickfont=dict(color="#e2eaf3"),title_font=dict(color="#e2eaf3")),
