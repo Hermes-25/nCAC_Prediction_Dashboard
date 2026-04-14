@@ -301,8 +301,20 @@ def load_data():
     })
     return df, False
 
+def _merge_layout(base: dict, override: dict) -> dict:
+    merged = dict(base)
+    for k, v in override.items():
+        if isinstance(v, dict) and isinstance(merged.get(k), dict):
+            merged[k] = {**merged[k], **v}
+        else:
+            merged[k] = v
+    return merged
+
+
 def apply_theme(fig, height=420, **kw):
-    fig.update_layout(**PLOTLY_BASE, height=height, **kw)
+    layout_kwargs = _merge_layout(PLOTLY_BASE, kw)
+    layout_kwargs["height"] = height
+    fig.update_layout(**layout_kwargs)
     return fig
 
 ALL_34 = [
@@ -508,7 +520,8 @@ def page_overview():
             if x < 6.4:
                 fig.add_annotation(x=x+1.25, y=0.5, text="→",
                                    showarrow=False, font=dict(size=18, color=M))
-        fig.update_layout(**PLOTLY_BASE, height=180, margin=dict(l=0,r=0,t=10,b=10),
+        fig = apply_theme(fig, 180,
+                          margin=dict(l=0,r=0,t=10,b=10),
                           xaxis=dict(visible=False,range=[-0.2,8.0]),
                           yaxis=dict(visible=False,range=[-0.2,1.3]))
         st.plotly_chart(fig, use_container_width=True)
@@ -667,7 +680,7 @@ def page_tsa():
         # ── nCAC formula box ──
         box(0.52,0.92,0.96,0.99,"rgba(0,0,0,0.25)",M,"nCAC (€/t CO₂) = f(Henry_CO₂, selectivity, water uptake, heat of ads.)","")
 
-        fig.update_layout(**PLOTLY_BASE, height=580,
+        fig = apply_theme(fig, 580,
                           xaxis=dict(visible=False,range=[0,1]),
                           yaxis=dict(visible=False,range=[0,1],scaleanchor="x"),
                           margin=dict(l=0,r=0,t=10,b=0))
@@ -760,7 +773,7 @@ def page_tsa():
             fig2.add_annotation(x=1.5,y=-0.35,text="POAVF = pore accessible volume fraction",
                                  showarrow=False,font=dict(size=10,color=M),xanchor="center")
 
-            fig2.update_layout(**PLOTLY_BASE, height=380,
+            fig2 = apply_theme(fig2, 380,
                                xaxis=dict(visible=False,range=[-0.5,3.5]),
                                yaxis=dict(visible=False,range=[-0.5,3.5],scaleanchor="x"),
                                legend=dict(x=0.01,y=0.99,font=dict(size=10)),
